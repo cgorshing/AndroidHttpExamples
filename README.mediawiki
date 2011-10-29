@@ -1,0 +1,101 @@
+ACK! Before we get started, if you are on Windows, then you will need to get Cygwin. If you are on Linux or a Mac, then you are good to go.
+
+== Android HTTPS w/Certificates ==
+http://www.bouncycastle.org/latest_releases.html -> bcprov-jdk16-146.jar
+
+==== Simple HTTP Get ====
+http://www.google.com/ig/api?weather=73102
+
+==== Trusted HTTPS Get ====
+https://www.google.com/ig/api?weather=73102
+
+This is because the certificate used on this page is trusted by default within Android. To view this....
+ adb pull /system/etc/security/cacerts.bks cacerts.bks
+
+To view the certs in the bks file
+ keytool -keystore cacerts.bks -storetype BKS -provider org.bouncycastle.jce.provider.BouncyCastleProvider -providerpath C:\tools\bcprov-jdk16-146.jar -storepass changeit -v -list
+
+To import a certificate (not used in this talk)
+ keytool -keystore cacerts.bks -storetype BKS -provider org.bouncycastle.jce.provider.BouncyCastleProvider -providerpath C:\bcprov.jar -storepass changeit -importcert -trustcacerts -alias CACERT -file root.crt
+
+==== UnTrusted HTTPS Get - No Authentication ====
+Problem with HTTPS Get - Certificate error
+
+https://test.nuisto.com/
+
+You can modify the cacerts.bks file in a root phone, but not otherwise (that I have found)
+
+This all came about from GeoTrust RootCA not being a trusted CA, I have found where they should be trusted starting in 2.3 (Looks like Google is open to the idea of continuing to add more root CA's - http://code.google.com/p/android/issues/detail?id=10985 )
+
+The certificate chain can get jacked up and possibly work in a desktop browser but not on your phone. The certificate chain needs to be in a linear progression up to the rootCA and I had problems with this as well on my test site where I didn't have the certificate chain quite right.
+
+Per Crazy Bob - "Android has built-in support for the Bouncy Castle keystore format (BKS)." So even though you reference the JAR when working with keytool on your dev machine, it is not needed to have your app use the JAR.
+
+==== Trust any/all certificates blindly - Definitely not for me ====
+Get an empty BKS keystore - before we can do anything with this keystore we *have* to 'load' it. This is done by passing in a null stream. It basically loads it to nothing. Create an instance of our own SSLSocketFactory, a few things go on here. First off, the HostnameVerifier checks the hostname of the URL against what is contained within the CN field of the certificate. We tell our SocketFactory to allow any/all hostnames. Others are possible such as:
+* Browser which will accept a.b.example.com for *.example.com.
+* Strict - will not accept a.example.com for *.example.com ... it must be an exact/perfect match
+
+Now back inside the custom SSLSocketFactory, the TrustManager doesn't do anything and this means the certificate was trusted. The TrustManager denotes an untrusted certificate by throwing exceptions (not the case here). A couple things about TrustManager:
+* checkClientTrusted is called to determine if a client using a certificate as authentication is trusted or not
+* checkServerTrusted is called when connecting to a server (like what we are doing) and if it is trusted
+* getAcceptedIssuers is for client auth, the list of accepted issuers of client authentication based certificates (not what we are interested in)
+
+The SchemeRegistry is to tie the scheme, port, and socketFactory all together. We don't really care about http/80 so just use the normal stuff.
+
+Next up is HttpParams - I have yet to dig down into the source to figure out how all this is used, but it will not work if you set this to null :)
+
+Just a simple connection manager by passing in the params and registry. You can use SingleClientConnManager or ThreadSafeClientConnManager, since this is a simple app/example I'm going with SingleClientConnManager.
+
+Then easy enough, create a DefaultHttpClient with the connection manager and params.
+
+Using this set up, there will be no validation on any part of the certificate (expiration date, name/CN ...etc) - this seems to be what some people like, but I *really* do not want this when sensitive data is being transmitted.
+
+So now onto SSL/HTTPS.
+
+==== Explicit trust of particular certificates ====
+Get certificate, create BKS store, use in project
+
+Now HTTPS Get works - okay - we are done, goodnight everybody.
+
+keytool and openssl to the rescue
+
+Side note about certificates, DER is a binary form (usually crt extension), when you see BEGIN CERTIFICATE/END CERTIFICATE this a PEM file (a base64 DER encoded file - see Wikipedia).
+
+You can download the certificate through the browser or use this command, this will require a little copy/pasting
+ openssl s_client -showcerts -connect test.nuisto.com:443 > certs.txt
+
+I have a small script to do this part:
+ keytool -import -v -trustcacerts -alias 0 -file <(openssl x509 -in theServerCertificate.pem) -keystore $CERTSTORE -storetype BKS -provider org.bouncycastle.jce.provider.BouncyCastleProvider -providerpath $JAR -storepass ez24get
+
+Now we are ready to get back into Android/Java code!
+
+View different information regarding SSL of a site
+ openssl s_client -connect test.nuisto.com:443
+
+Basically the start of it all (that I can find) - this guy must be wicked smart to figure this out with almost nothing showing these problems beforehand (again - that I can find)
+ http://blog.crazybob.org/2010/02/android-trusting-ssl-certificates.html
+
+A competitor to Crazy Bob's article
+ http://blog.antoine.li/index.php/2010/10/android-trusting-ssl-certificates/
+
+If I ever see/meet Antoine or Crazy Bob - I'm buying them a beer.
+
+Great article about the differences between HttpUrlConnection & DefaultHttpClient
+ http://android-developers.blogspot.com/2011/09/androids-http-clients.html
+
+HttpURLConnection can't do POST with authorization/authentication (one year old)
+ http://code.google.com/p/android/issues/detail?id=4326
+
+What I use for Basic Authentication, base64 encoding
+ http://www.androidcoder.org/blog/android-http-request-basic-authentication/
+
+I could not get Preemptive Authentication to work - example
+ http://svn.apache.org/repos/asf/httpcomponents/httpclient/tags/4.0.1/httpclient/src/examples/org/apache/http/examples/client/ClientPreemptiveBasicAuthentication.java
+
+This references many open issues ranging from rootCA's, to intermediate problems (out of order certificates as I mentioned earlier)
+ http://www.mcbsys.com/techblog/2010/12/android-certificates/
+
+==== With wrong credentials ====
+
+==== With correct credentials ====
